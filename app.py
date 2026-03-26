@@ -60,18 +60,17 @@ if st.button("⚙️ Generate Enterprise FAR", type="primary"):
                 df["Original Cost (Rs)"] = pd.to_numeric(df["Original Cost (Rs)"], errors='coerce').fillna(0)
                 df["Salvage Value"] = pd.to_numeric(df["Salvage Value"], errors='coerce')
                 
-                # Auto-calculate 5% Salvage Value if left blank (matching your Excel =ROUND(Cost*5%))
+                # Auto-calculate 5% Salvage Value if left blank
                 df["Salvage Value"] = np.where(df["Salvage Value"].isna(), np.round(df["Original Cost (Rs)"] * 0.05, 1), df["Salvage Value"])
                 
                 df["Date of Purchase"] = pd.to_datetime(df["Date of Purchase"])
                 df["Put to use date"] = pd.to_datetime(df["Put to use date"])
 
-                # 2. Merge Rules (XLOOKUP equivalent)
+                # 2. Merge Rules
                 df = pd.merge(df, edited_rules, on="Asset Category", how="left")
                 df["Useful Life"] = pd.to_numeric(df["Useful Life"], errors='coerce').fillna(1)
                 
-                # 3. Calculate Effective Rate (Matching your WDV / SLM fractional math)
-                # WDV: 1 - (Salvage/Cost)^(1/Life) | SLM: 1/Life
+                # 3. Calculate Effective Rate
                 wdv_rate = 1 - (df["Salvage Value"] / df["Original Cost (Rs)"]) ** (1 / df["Useful Life"])
                 slm_rate = 1 / df["Useful Life"]
                 df["Effective Rate"] = np.where(df["Depreciation Method"] == "WDV", wdv_rate, slm_rate)
@@ -86,9 +85,62 @@ if st.button("⚙️ Generate Enterprise FAR", type="primary"):
                     df["Date of Write Off"] = pd.NaT
                     df["FA Write off(Rs)"] = 0
 
-                # Determine the end date for calculation (Write-off date OR Financial Year End)
                 df["Calc End Date"] = df["Date of Write Off"].fillna(fy_end_dt)
                 df["Calc End Date"] = pd.to_datetime(df["Calc End Date"])
 
-                # 5. Exact Days Used Logic (Matching your MIN/MAX formulas)
-                # Opening Days:
+                # 5. Exact Days Used Logic
+                df["Days Used Opening"] = np.clip((fy_start_dt - df["Put to use date"]).dt.days, 0, 365 * df["Useful Life"])
+                df["Days Used Closing"] = np.clip((df["Calc End Date"] - df["Put to use date"]).dt.days + 1, 0, 365 * df["Useful Life"])
+
+                # 6. Gross Block Logic
+                df["Gross Block Opening"] = np.where(df["Date of Purchase"] < fy_start_dt, df["Original Cost (Rs)"], 0)
+                df["Gross Block Additions"] = np.where((df["Date of Purchase"] >= fy_start_dt) & (df["Date of Purchase"] <= fy_end_dt), df["Original Cost (Rs)"], 0)
+                df["Gross Block Deletions"] = df["FA Write off(Rs)"]
+                df["Gross Block Closing"] = df["Gross Block Opening"] + df["Gross Block Additions"] - df["Gross Block Deletions"]
+
+                # 7. Accumulated Depreciation Logic
+                dep_base = df["Original Cost (Rs)"] - df["Salvage Value"]
+                
+                op_slm = dep_base * df["Effective Rate"] * (df["Days Used Opening"] / 365)
+                op_wdv = dep_base * (1 - (1 - df["Effective Rate"]) ** (df["Days Used Opening"] / 365))
+                df["Acc Dep Opening"] = np.where(df["Days Used Opening"] > 0, np.where(df["Depreciation Method"] == "SLM", op_slm, op_wdv), 0)
+
+                cl_slm = dep_base * df["Effective Rate"] * (df["Days Used Closing"] / 365)
+                cl_wdv = dep_base * (1 - (1 - df["Effective Rate"]) ** (df["Days Used Closing"] / 365))
+                df["Acc Dep Closing"] = np.where(df["Days Used Closing"] > 0, np.where(df["Depreciation Method"] == "SLM", cl_slm, cl_wdv), 0)
+
+                df["Dep During Year"] = df["Acc Dep Closing"] - df["Acc Dep Opening"]
+
+                # 8. Net Block Logic
+                df["Net Block Opening"] = df["Gross Block Opening"] - df["Acc Dep Opening"]
+                df["Net Block Closing"] = df["Gross Block Closing"] - df["Acc Dep Closing"]
+
+                # --- FORMATTING THE FINAL OUTPUT ---
+                final_cols = [
+                    "Control No.", "Date of Purchase", "Put to use date", "Asset Category", "Vendor Name", "Invoice No.", 
+                    "FA Qty", "Original Cost (Rs)", "Salvage Value", "Depreciation Method", "Useful Life", "Effective Rate",
+                    "Gross Block Opening", "Gross Block Additions", "Gross Block Deletions", "Gross Block Closing",
+                    "Days Used Opening", "Days Used Closing", 
+                    "Acc Dep Opening", "Dep During Year", "Acc Dep Closing", 
+                    "Net Block Opening", "Net Block Closing"
+                ]
+                final_far = df[final_cols]
+
+                # --- UI DISPLAY ---
+                st.success("Calculations complete! Pro-rata math applied successfully.")
+                st.dataframe(final_far.style.format({col: "{:,.2f}" for col in final_far.select_dtypes(include=['float64','int64']).columns}), use_container_width=True, hide_index=True)
+
+                # --- EXCEL DOWNLOAD ---
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    final_far.to_excel(writer, index=False, sheet_name='Detailed FAR')
+                
+                st.download_button(
+                    label="📥 Download Exact FAR (Excel)",
+                    data=output.getvalue(),
+                    file_name=f"FAR_Register_{fy_end_dt.strftime('%Y')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+        except Exception as e:
+            st.error(f"Calculation Error: {e}")
