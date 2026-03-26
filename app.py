@@ -1,99 +1,108 @@
 import streamlit as st
 import pandas as pd
-import io
+import datetime
 
-# 1. Setup the Webpage
-st.set_page_config(page_title="Depreciation Calculator", layout="wide")
+# --- Webpage Setup ---
+st.set_page_config(page_title="Pro Depreciation Tool", layout="wide")
 
-st.title("📊 Depreciation Calculator Web Tool")
-st.markdown("Download the templates, fill in your asset details, upload them below, and calculate!")
+st.title("🚀 Pro Depreciation Calculator")
+st.markdown("Enter your asset rules, additions, and write-offs directly below to generate your schedule.")
 
-# --- 2. Function to create blank templates ---
-def create_template(sheet_type):
-    # We create a blank table with standard column names
-    if sheet_type == "Addition":
-        df = pd.DataFrame(columns=["Asset ID", "Asset Category", "Date of Purchase", "Purchase Value", "Depreciation Rate %"])
-    else:
-        df = pd.DataFrame(columns=["Asset ID", "Date of Write Off", "Write Off Value", "Reason"])
-    
-    # Save the blank table as an Excel file in the website's memory
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_type)
-    return output.getvalue()
+# --- 1. Reporting Date ---
+st.subheader("Step 1: Reporting Period")
+reporting_date = st.date_input("Select Reporting Date (Year End):", datetime.date.today())
 
-# --- 3. Download Buttons for Templates ---
-st.subheader("Step 1: Download Templates")
-col1, col2 = st.columns(2)
+# --- 2. Asset Categories & Rules ---
+st.subheader("Step 2: Asset Category Rules")
+st.markdown("Add your asset classes and how they should depreciate.")
+# We create an empty table with your exact column names
+rule_columns = ["Asset Category", "Depreciation Method", "Useful Life (Years)", "Depreciation Rate %"]
+rule_df = pd.DataFrame(columns=rule_columns)
 
-with col1:
-    st.download_button(
-        label="⬇️ Download 'FA Addition' Template",
-        data=create_template("Addition"),
-        file_name="FA_Addition_Template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# num_rows="dynamic" lets the user add as many rows as they want!
+edited_rules = st.data_editor(rule_df, num_rows="dynamic", use_container_width=True, key="rules")
 
-with col2:
-    st.download_button(
-        label="⬇️ Download 'FA Write Off' Template",
-        data=create_template("Write Off"),
-        file_name="FA_Write_Off_Template.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# --- 4. File Uploaders ---
+# --- 3. FA Additions Input ---
 st.divider()
-st.subheader("Step 2: Upload Your Filled Data")
+st.subheader("Step 3: Fixed Asset Additions")
+add_columns = ["Asset ID", "Asset Category", "Date of Purchase", "Put to use date", "Purchase Value", "Vendor Name", "Invoice No.", "Invoice Qty", "Salvage Value"]
+add_df = pd.DataFrame(columns=add_columns)
 
-col3, col4 = st.columns(2)
-with col3:
-    addition_file = st.file_uploader("Upload filled FA Addition File", type=["xlsx"])
-with col4:
-    write_off_file = st.file_uploader("Upload filled FA Write Off File (Optional)", type=["xlsx"])
+edited_additions = st.data_editor(add_df, num_rows="dynamic", use_container_width=True, key="additions")
 
-# --- 5. Calculation Logic ---
+# --- 4. FA Write Offs Input ---
 st.divider()
-st.subheader("Step 3: Calculate")
-selected_method = st.selectbox("Select Calculation Method:", ["Straight Line Method (SLM)", "Written Down Value (WDV)"])
+st.subheader("Step 4: Fixed Asset Write-Offs / Deletions")
+wo_columns = ["Asset ID", "Date of Write Off", "Write Off Qty", "Reason"]
+wo_df = pd.DataFrame(columns=wo_columns)
 
-if st.button("Calculate Depreciation", type="primary"):
-    
-    # Check if the user actually uploaded the required Addition file
-    if addition_file is not None:
-        with st.spinner("Crunching the numbers..."):
-            try:
-                # Read the Excel files the user just uploaded
-                df_add = pd.read_excel(addition_file)
+edited_writeoffs = st.data_editor(wo_df, num_rows="dynamic", use_container_width=True, key="writeoffs")
+
+# --- 5. Generate Schedule Button ---
+st.divider()
+if st.button("🧾 Generate Depreciation Schedule", type="primary"):
+    with st.spinner("Building your schedule..."):
+        try:
+            # First, we check if they actually entered data
+            if edited_rules.empty or edited_additions.empty:
+                st.warning("⚠️ Please enter at least one Asset Rule and one Addition to calculate.")
+            else:
+                # ---------------------------------------------------------
+                # MATH & AGGREGATION ENGINE
+                # ---------------------------------------------------------
                 
-                # If they also uploaded a write-off file, read it too
-                if write_off_file is not None:
-                    df_write_off = pd.read_excel(write_off_file)
+                # Make sure numbers are treated as math numbers, not text
+                edited_additions["Purchase Value"] = pd.to_numeric(edited_additions["Purchase Value"], errors='coerce').fillna(0)
                 
-                # --- CALCULATION MATH GOES HERE ---
-                # Since we are no longer using Excel's formulas, we do the math in Python!
-                # Here is a basic example calculating a simple percentage:
+                # Join the Rules to the Additions so the app knows the rate for each item
+                merged_data = pd.merge(edited_additions, edited_rules, on="Asset Category", how="left")
+                merged_data["Depreciation Rate %"] = pd.to_numeric(merged_data["Depreciation Rate %"], errors='coerce').fillna(0)
                 
-                # Ensure the columns are numeric before calculating
-                df_add["Purchase Value"] = pd.to_numeric(df_add["Purchase Value"], errors='coerce').fillna(0)
-                df_add["Depreciation Rate %"] = pd.to_numeric(df_add["Depreciation Rate %"], errors='coerce').fillna(0)
+                # Calculate Basic Depreciation for the year (Purchase Value * Rate / 100)
+                # *Note: For a full pro-rata calculation, you would use 'Put to use date' and 'reporting_date' to find exact days.*
+                merged_data["Depreciation For Year"] = merged_data["Purchase Value"] * (merged_data["Depreciation Rate %"] / 100)
                 
-                # Calculate Depreciation (Purchase Value * Rate / 100)
-                df_add["Calculated Depreciation"] = df_add["Purchase Value"] * (df_add["Depreciation Rate %"] / 100)
+                # Group everything together by "Asset Category" to match your Annexure image format
+                schedule = []
+                categories = merged_data["Asset Category"].unique()
                 
-                # Calculate Net Block (Purchase Value - Depreciation)
-                df_add["Net Block Value"] = df_add["Purchase Value"] - df_add["Calculated Depreciation"]
+                for cat in categories:
+                    cat_data = merged_data[merged_data["Asset Category"] == cat]
+                    
+                    # Calculate totals for this specific category block
+                    additions_total = cat_data["Purchase Value"].sum()
+                    dep_for_year_total = cat_data["Depreciation For Year"].sum()
+                    
+                    # Create the row matching your image's column headers
+                    schedule_row = {
+                        "Block of Assets": cat,
+                        "Gross Block - Opening Balance": 0, # Assumed 0 for new additions
+                        "Gross Block - Additions": additions_total,
+                        "Gross Block - Deletions": 0, # You can link the write-off table math here later
+                        "Gross Block - Closing Balance": additions_total, # Opening + Additions - Deletions
+                        "Acc Dep - Opening Balance": 0,
+                        "Acc Dep - For the year": dep_for_year_total,
+                        "Acc Dep - Deletions": 0,
+                        "Acc Dep - Closing Balance": dep_for_year_total,
+                        f"Net Block As at {reporting_date.strftime('%d-%b-%Y')}": additions_total - dep_for_year_total
+                    }
+                    schedule.append(schedule_row)
                 
-                st.success("Calculation Complete!")
+                # Convert the list of rows into a final DataFrame table
+                final_schedule_df = pd.DataFrame(schedule)
                 
-                # Display the final formatted data table
+                # ---------------------------------------------------------
+                # DISPLAY THE FINAL SCHEDULE
+                # ---------------------------------------------------------
+                st.success("Schedule Generated Successfully!")
+                st.markdown("### Fixed Asset Schedule")
+                
+                # Display beautifully formatted table
                 st.dataframe(
-                    df_add.style.format({"Purchase Value": "{:,.2f}", "Calculated Depreciation": "{:,.2f}", "Net Block Value": "{:,.2f}"}), 
-                    use_container_width=True, 
+                    final_schedule_df.style.format(precision=2, thousands=","),
+                    use_container_width=True,
                     hide_index=True
                 )
                 
-            except Exception as e:
-                st.error(f"Oops! Something went wrong reading the file. Make sure you didn't change the column names in the template. Details: {e}")
-    else:
-        st.warning("⚠️ Please upload the FA Addition file first!")
+        except Exception as e:
+            st.error(f"Error calculating schedule: {e}")
