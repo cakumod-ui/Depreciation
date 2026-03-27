@@ -14,11 +14,20 @@ if 'logged_in' not in st.session_state:
 # Initialize empty tables in session memory so data survives tab-switching
 if 'rules_data' not in st.session_state:
     st.session_state.rules_data = pd.DataFrame(columns=["Asset Category", "Depreciation Method", "Useful Life"])
-if 'add_data' not in st.session_state:
-    st.session_state.add_data = pd.DataFrame(columns=["Control No.", "Asset Category", "Vendor Name", "Invoice No.", "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"])
-if 'wo_data' not in st.session_state:
-    st.session_state.wo_data = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
 
+if 'add_data' not in st.session_state:
+    df_add = pd.DataFrame(columns=["Control No.", "Asset Category", "Vendor Name", "Invoice No.", "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"])
+    # Explicitly set these columns to datetime objects so Streamlit's DateColumn doesn't crash
+    df_add["Date of Purchase"] = pd.Series(dtype='datetime64[ns]')
+    df_add["Put to use date"] = pd.Series(dtype='datetime64[ns]')
+    st.session_state.add_data = df_add
+
+if 'wo_data' not in st.session_state:
+    df_wo = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
+    # Explicitly set this column to datetime objects
+    df_wo["Date of Write Off"] = pd.Series(dtype='datetime64[ns]')
+    st.session_state.wo_data = df_wo
+    
 # --- 1. LOGIN PAGE ---
 def login_page():
     st.markdown("<h1 style='text-align: center;'>🏢 The AccounTech</h1>", unsafe_allow_html=True)
