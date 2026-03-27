@@ -15,7 +15,10 @@ if 'rules_data' not in st.session_state:
     st.session_state.rules_data = pd.DataFrame(columns=["Asset Category", "Depreciation Method", "Useful Life"])
 
 if 'add_data' not in st.session_state:
-    st.session_state.add_data = pd.DataFrame(columns=["Control No.", "Asset Category", "Vendor Name", "Invoice No.", "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"])
+    st.session_state.add_data = pd.DataFrame(columns=[
+        "Control No.", "Asset Category", "Vendor Name", "Invoice No.", 
+        "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"
+    ])
 
 if 'wo_data' not in st.session_state:
     st.session_state.wo_data = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
@@ -73,7 +76,7 @@ def main_app():
 
     elif page == "📉 Depreciation Tool":
         st.title("Enterprise FAR Calculator")
-        st.markdown("Generates exact days-used depreciation with advanced proportional logic.")
+        st.markdown("Generates exact days-used depreciation. **Strict Salvage Value caps are enabled.**")
 
         st.subheader("Step 1: Financial Year Setup")
         col_d1, col_d2 = st.columns(2)
@@ -135,6 +138,9 @@ def main_app():
                         safe_qty = np.where(df["FA Qty"] == 0, 1, df["FA Qty"])
                         total_cost = df["Original Cost (Rs)"]
                         total_salvage = df["Salvage Value"]
+                        
+                        # --- STRICT SALVAGE VALUE CAP ---
+                        # Maximum allowable accumulated depreciation for the entire asset lifecycle
                         max_acc_dep = np.maximum(total_cost - total_salvage, 0)
                         
                         safe_cost = np.where(total_cost == 0, 1, total_cost)
@@ -168,7 +174,7 @@ def main_app():
                         df["FA Write off Qty Opening"] = df["FA Write off Qty Opening"].fillna(0)
                         df["FA Write off Qty During the year"] = df["FA Write off Qty During the year"].fillna(0)
 
-                        # --- THE FIX: Mathematical "Proportional" Depreciation Logic ---
+                        # Mathematical "Proportional" Depreciation Logic
                         days_opening = np.clip((fy_start_dt - df["Put to use date"]).dt.days, 0, 36500)
                         days_closing = np.clip((fy_end_dt - df["Put to use date"]).dt.days + 1, 0, 36500)
                         
@@ -176,12 +182,13 @@ def main_app():
                         days_deletion = (latest_wo - df["Put to use date"]).dt.days + 1
                         days_deletion = np.clip(days_deletion.fillna(0), 0, 36500)
                         
-                        # Calculate full theoretical depreciation first
+                        # --- THE CALCULATION ENGINE WITH STRICT CAPPING ---
                         def calc_full_acc_dep(days):
                             days_frac = days / 365.0
                             slm = max_acc_dep * df["Effective Rate"] * days_frac
                             wdv = total_cost * (1 - (1 - df["Effective Rate"]) ** days_frac)
                             calc = np.where(df["Depreciation Method"] == "SLM", slm, wdv)
+                            # CRITICAL: np.clip forces the depreciation to STOP exactly at the Max Acc Dep (Cost - Salvage)
                             return np.where(days > 0, np.clip(calc, 0, max_acc_dep), 0)
 
                         full_acc_dep_opening = calc_full_acc_dep(days_opening)
@@ -198,6 +205,10 @@ def main_app():
                         prop_opening_active = np.clip(1 - prop_opening_deleted, 0, 1)
                         prop_closing_active = np.clip(1 - (prop_opening_deleted + prop_during_deleted), 0, 1)
 
+                        # Write Off (Rs) Values
+                        df["FA Write off(Rs) Opening"] = total_cost * prop_opening_deleted
+                        df["FA Write off(Rs) During the year"] = total_cost * prop_during_deleted
+
                         # Scale Gross Block Perfectly
                         df["Gross Block Opening"] = np.where(df["Date of Purchase"] < fy_start_dt, total_cost * prop_opening_active, 0)
                         df["Gross Block Additions"] = np.where((df["Date of Purchase"] >= fy_start_dt) & (df["Date of Purchase"] <= fy_end_dt), total_cost, 0)
@@ -210,20 +221,25 @@ def main_app():
                         
                         # Derive Expenses using algebraic plug formulas to guarantee balance
                         acc_dep_withdrawn = full_acc_dep_deletion * prop_during_deleted
-                        total_dep_expense = df["Acc Dep Closing"] - df["Acc Dep Opening"] + acc_dep_withdrawn
                         opening_acc_dep_of_sold_items = full_acc_dep_opening * prop_during_deleted
                         
                         df["Depreciation on Deletions"] = np.maximum(acc_dep_withdrawn - opening_acc_dep_of_sold_items, 0)
+                        
+                        # Ensure Dep During Year correctly balances the ledger
+                        total_dep_expense = df["Acc Dep Closing"] - df["Acc Dep Opening"] + acc_dep_withdrawn
                         df["Dep During Year"] = np.maximum(total_dep_expense - df["Depreciation on Deletions"], 0)
 
-                        # Final Net Block Calculation
+                        # Final Net Block Calculation (Guaranteed >= Salvage Value of active assets)
                         df["Net Block Opening"] = np.maximum(df["Gross Block Opening"] - df["Acc Dep Opening"], 0)
                         df["Net Block Closing"] = np.maximum(df["Gross Block Closing"] - df["Acc Dep Closing"], 0)
 
-                        # Formatting Output
+                        # Formatting Output - Ensure EVERY column is included
                         final_cols = [
                             "Control No.", "Date of Purchase", "Put to use date", "Asset Category", 
-                            "Original Cost (Rs)", "Salvage Value", "Effective Rate",
+                            "Vendor Name", "Invoice No.", "FA Qty", "Original Cost (Rs)", "Salvage Value", 
+                            "Depreciation Method", "Useful Life", "Effective Rate",
+                            "FA Write off Qty Opening", "FA Write off(Rs) Opening", 
+                            "FA Write off Qty During the year", "FA Write off(Rs) During the year",
                             "Gross Block Opening", "Gross Block Additions", "Gross Block Deletions", "Gross Block Closing",
                             "Acc Dep Opening", "Depreciation on Deletions", "Dep During Year", "Acc Dep Closing", 
                             "Net Block Opening", "Net Block Closing"
@@ -231,7 +247,7 @@ def main_app():
                         
                         for c in final_cols:
                             if c not in df.columns:
-                                df[c] = 0
+                                df[c] = ""
                                 
                         final_far = df[final_cols]
 
