@@ -91,7 +91,6 @@ def main_app():
         st.divider()
         st.subheader("Step 3: Fixed Asset Additions")
         
-        # --- THE FIX: Force Datetime conversion immediately before rendering ---
         st.session_state.add_data["Date of Purchase"] = pd.to_datetime(st.session_state.add_data["Date of Purchase"], errors='coerce')
         st.session_state.add_data["Put to use date"] = pd.to_datetime(st.session_state.add_data["Put to use date"], errors='coerce')
         
@@ -106,7 +105,6 @@ def main_app():
         st.divider()
         st.subheader("Step 4: Fixed Asset Write-Offs")
         
-        # --- THE FIX: Force Datetime conversion immediately before rendering ---
         st.session_state.wo_data["Date of Write Off"] = pd.to_datetime(st.session_state.wo_data["Date of Write Off"], errors='coerce')
         
         st.session_state.wo_data = st.data_editor(
@@ -198,11 +196,19 @@ def main_app():
 
                         df["Dep During Year"] = np.maximum(df["Acc Dep Closing"] - df["Acc Dep Opening"], 0).fillna(0)
 
-                        # Depreciation on Deletions Logic
-                        calc_start_date = np.maximum(fy_start_dt, df["Put to use date"])
+                        # --- FIX: Date-safe Depreciation on Deletions Logic ---
+                        # Use Pandas native clip() to safely cap the minimum date without triggering integer comparisons
+                        calc_start_date = df["Put to use date"].clip(lower=fy_start_dt)
+                        
+                        # Safely check if the write-off date exists and is within the FY
+                        valid_wo = df["Latest Date of Write Off"].notna()
+                        in_fy = (df["Latest Date of Write Off"] >= fy_start_dt) & (df["Latest Date of Write Off"] <= fy_end_dt)
+                        
+                        raw_days = (df["Latest Date of Write Off"] - calc_start_date).dt.days + 1
+                        
                         df["Days Used on Deletions"] = np.where(
-                            (df["Latest Date of Write Off"] >= fy_start_dt) & (df["Latest Date of Write Off"] <= fy_end_dt),
-                            (pd.to_datetime(df["Latest Date of Write Off"]) - calc_start_date).dt.days + 1,
+                            valid_wo & in_fy,
+                            raw_days.fillna(0),
                             0
                         )
                         df["Days Used on Deletions"] = np.clip(df["Days Used on Deletions"], 0, 365)
