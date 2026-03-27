@@ -16,18 +16,11 @@ if 'rules_data' not in st.session_state:
     st.session_state.rules_data = pd.DataFrame(columns=["Asset Category", "Depreciation Method", "Useful Life"])
 
 if 'add_data' not in st.session_state:
-    df_add = pd.DataFrame(columns=["Control No.", "Asset Category", "Vendor Name", "Invoice No.", "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"])
-    # Explicitly set these columns to datetime objects so Streamlit's DateColumn doesn't crash
-    df_add["Date of Purchase"] = pd.Series(dtype='datetime64[ns]')
-    df_add["Put to use date"] = pd.Series(dtype='datetime64[ns]')
-    st.session_state.add_data = df_add
+    st.session_state.add_data = pd.DataFrame(columns=["Control No.", "Asset Category", "Vendor Name", "Invoice No.", "Date of Purchase", "Put to use date", "FA Qty", "Original Cost (Rs)", "Salvage Value"])
 
 if 'wo_data' not in st.session_state:
-    df_wo = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
-    # Explicitly set this column to datetime objects
-    df_wo["Date of Write Off"] = pd.Series(dtype='datetime64[ns]')
-    st.session_state.wo_data = df_wo
-    
+    st.session_state.wo_data = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
+
 # --- 1. LOGIN PAGE ---
 def login_page():
     st.markdown("<h1 style='text-align: center;'>🏢 The AccounTech</h1>", unsafe_allow_html=True)
@@ -91,22 +84,34 @@ def main_app():
         fy_start_dt = pd.to_datetime(fy_start)
         fy_end_dt = pd.to_datetime(fy_end)
 
-        # Interactive Data Grids (Linked to session state to remember inputs)
+        # Interactive Data Grids
         st.subheader("Step 2: Master Dep Approach")
         st.session_state.rules_data = st.data_editor(st.session_state.rules_data, num_rows="dynamic", use_container_width=True)
 
         st.divider()
         st.subheader("Step 3: Fixed Asset Additions")
+        
+        # --- THE FIX: Force Datetime conversion immediately before rendering ---
+        st.session_state.add_data["Date of Purchase"] = pd.to_datetime(st.session_state.add_data["Date of Purchase"], errors='coerce')
+        st.session_state.add_data["Put to use date"] = pd.to_datetime(st.session_state.add_data["Put to use date"], errors='coerce')
+        
         st.session_state.add_data = st.data_editor(
             st.session_state.add_data, num_rows="dynamic", use_container_width=True,
-            column_config={"Date of Purchase": st.column_config.DateColumn(), "Put to use date": st.column_config.DateColumn()}
+            column_config={
+                "Date of Purchase": st.column_config.DateColumn("Date of Purchase"), 
+                "Put to use date": st.column_config.DateColumn("Put to use date")
+            }
         )
 
         st.divider()
         st.subheader("Step 4: Fixed Asset Write-Offs")
+        
+        # --- THE FIX: Force Datetime conversion immediately before rendering ---
+        st.session_state.wo_data["Date of Write Off"] = pd.to_datetime(st.session_state.wo_data["Date of Write Off"], errors='coerce')
+        
         st.session_state.wo_data = st.data_editor(
             st.session_state.wo_data, num_rows="dynamic", use_container_width=True,
-            column_config={"Date of Write Off": st.column_config.DateColumn()}
+            column_config={"Date of Write Off": st.column_config.DateColumn("Date of Write Off")}
         )
 
         # CORE MATH ENGINE
@@ -193,8 +198,7 @@ def main_app():
 
                         df["Dep During Year"] = np.maximum(df["Acc Dep Closing"] - df["Acc Dep Opening"], 0).fillna(0)
 
-                        # --- NEW: Depreciation on Deletions Logic ---
-                        # Calculate exact days from start of year (or purchase date) up to the deletion date
+                        # Depreciation on Deletions Logic
                         calc_start_date = np.maximum(fy_start_dt, df["Put to use date"])
                         df["Days Used on Deletions"] = np.where(
                             (df["Latest Date of Write Off"] >= fy_start_dt) & (df["Latest Date of Write Off"] <= fy_end_dt),
