@@ -21,6 +21,14 @@ if 'add_data' not in st.session_state:
 if 'wo_data' not in st.session_state:
     st.session_state.wo_data = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
 
+# --- Helper Function to Clean Excel Data ---
+def safe_numeric(col, default_val=0):
+    """Safely converts Excel comma-formatted strings into pure Python numbers."""
+    # Convert to string, strip out everything except digits, decimals, and minus signs
+    cleaned = col.astype(str).str.replace(r'[^\d.-]', '', regex=True)
+    # Convert to numeric, turn errors to NaN, then fill with default value
+    return pd.to_numeric(cleaned, errors='coerce').fillna(default_val)
+
 # --- 1. LOGIN PAGE ---
 def login_page():
     st.markdown("<h1 style='text-align: center;'>🏢 The AccounTech</h1>", unsafe_allow_html=True)
@@ -36,7 +44,6 @@ def login_page():
             submit = st.form_submit_button("Secure Login", use_container_width=True)
             
             if submit:
-                # Default credentials for your testing
                 if username == "admin" and password == "admin123":
                     st.session_state.logged_in = True
                     st.rerun()
@@ -45,7 +52,6 @@ def login_page():
 
 # --- 2. MAIN APP ARCHITECTURE ---
 def main_app():
-    # Sidebar Navigation & Branding
     st.sidebar.markdown("<h2>🏢 The AccounTech</h2>", unsafe_allow_html=True)
     st.sidebar.warning("⏳ **Trial ending in 7 days.** Please renew your credits.")
     st.sidebar.divider()
@@ -57,10 +63,9 @@ def main_app():
         st.session_state.logged_in = False
         st.rerun()
 
-    # --- PAGE: MAIN DASHBOARD ---
     if page == "🏠 Main Dashboard":
         st.title("Welcome to The AccounTech Workspace")
-        st.markdown("Your connection is secure. All inputs in the Depreciation Tool are automatically saved to your current browser session. You can safely switch between tabs without losing your progress.")
+        st.markdown("Your connection is secure. All inputs in the Depreciation Tool are automatically saved to your current browser session.")
         
         st.divider()
         col1, col2 = st.columns(2)
@@ -69,7 +74,6 @@ def main_app():
         with col2:
             st.metric(label="Days Remaining", value="7 Days", delta="-1 day")
 
-    # --- PAGE: DEPRECIATION TOOL ---
     elif page == "📉 Depreciation Tool":
         st.title("Enterprise FAR Calculator")
         st.markdown("Generates exact days-used depreciation with advanced deletion math.")
@@ -90,7 +94,6 @@ def main_app():
 
         st.divider()
         st.subheader("Step 3: Fixed Asset Additions")
-        
         st.session_state.add_data["Date of Purchase"] = pd.to_datetime(st.session_state.add_data["Date of Purchase"], errors='coerce')
         st.session_state.add_data["Put to use date"] = pd.to_datetime(st.session_state.add_data["Put to use date"], errors='coerce')
         
@@ -104,7 +107,6 @@ def main_app():
 
         st.divider()
         st.subheader("Step 4: Fixed Asset Write-Offs")
-        
         st.session_state.wo_data["Date of Write Off"] = pd.to_datetime(st.session_state.wo_data["Date of Write Off"], errors='coerce')
         
         st.session_state.wo_data = st.data_editor(
@@ -115,22 +117,33 @@ def main_app():
         # CORE MATH ENGINE
         st.divider()
         if st.button("⚙️ Generate Enterprise FAR", type="primary"):
-            with st.spinner("Processing advanced pro-rata math & deletions..."):
+            with st.spinner("Sanitizing data & processing advanced pro-rata math..."):
                 try:
                     if st.session_state.rules_data.empty or st.session_state.add_data.empty:
                         st.warning("⚠️ Please enter Rules and Additions data.")
                     else:
                         df = st.session_state.add_data.copy()
-                        df["Original Cost (Rs)"] = pd.to_numeric(df["Original Cost (Rs)"], errors='coerce').fillna(0)
-                        df["Salvage Value"] = pd.to_numeric(df["Salvage Value"], errors='coerce').fillna(0)
-                        df["FA Qty"] = pd.to_numeric(df["FA Qty"], errors='coerce').fillna(1)
+                        
+                        # --- FIX 1: Robust Numeric Cleaning ---
+                        df["Original Cost (Rs)"] = safe_numeric(df["Original Cost (Rs)"], 0)
+                        df["Salvage Value"] = safe_numeric(df["Salvage Value"], 0)
+                        df["FA Qty"] = safe_numeric(df["FA Qty"], 1)
+
+                        # --- FIX 2: Strip accidental spaces from Categories to ensure exact matches ---
+                        df["Asset Category"] = df["Asset Category"].astype(str).str.strip()
+                        rules_clean = st.session_state.rules_data.copy()
+                        rules_clean["Asset Category"] = rules_clean["Asset Category"].astype(str).str.strip()
                         
                         df["Max Acc Dep"] = np.maximum(df["Original Cost (Rs)"] - df["Salvage Value"], 0)
-                        df["Date of Purchase"] = pd.to_datetime(df["Date of Purchase"])
-                        df["Put to use date"] = pd.to_datetime(df["Put to use date"])
+                        
+                        # Handle missing dates gracefully
+                        df["Date of Purchase"] = pd.to_datetime(df["Date of Purchase"], errors='coerce')
+                        df["Put to use date"] = pd.to_datetime(df["Put to use date"], errors='coerce')
+                        df["Date of Purchase"] = df["Date of Purchase"].fillna(df["Put to use date"])
+                        df["Put to use date"] = df["Put to use date"].fillna(df["Date of Purchase"])
 
-                        df = pd.merge(df, st.session_state.rules_data, on="Asset Category", how="left")
-                        df["Useful Life"] = pd.to_numeric(df["Useful Life"], errors='coerce').fillna(1)
+                        df = pd.merge(df, rules_clean, on="Asset Category", how="left")
+                        df["Useful Life"] = safe_numeric(df["Useful Life"], 1)
                         
                         safe_cost = np.where(df["Original Cost (Rs)"] == 0, 1, df["Original Cost (Rs)"])
                         wdv_rate = 1 - (df["Salvage Value"] / safe_cost) ** (1 / df["Useful Life"])
@@ -141,8 +154,8 @@ def main_app():
 
                         if not st.session_state.wo_data.empty:
                             wo = st.session_state.wo_data.copy()
-                            wo["Date of Write Off"] = pd.to_datetime(wo["Date of Write Off"])
-                            wo["FA Write off Qty"] = pd.to_numeric(wo["FA Write off Qty"], errors='coerce').fillna(0)
+                            wo["Date of Write Off"] = pd.to_datetime(wo["Date of Write Off"], errors='coerce')
+                            wo["FA Write off Qty"] = safe_numeric(wo["FA Write off Qty"], 0)
 
                             wo_opening = wo[wo["Date of Write Off"] < fy_start_dt]
                             op_agg = wo_opening.groupby("Control No.")["FA Write off Qty"].sum().reset_index(name="FA Write off Qty Opening")
@@ -185,8 +198,6 @@ def main_app():
                         op_wdv = df["Original Cost (Rs)"] * (1 - (1 - df["Effective Rate"]) ** days_op_frac)
                         
                         calc_op = np.where(df["Days Used Opening"] > 0, np.where(df["Depreciation Method"] == "SLM", op_slm, op_wdv), 0)
-                        
-                        # FIX: Assign first, then apply fillna() natively on the Pandas Series
                         df["Acc Dep Opening"] = np.minimum(calc_op, df["Max Acc Dep"])
                         df["Acc Dep Opening"] = df["Acc Dep Opening"].fillna(0)
 
@@ -195,12 +206,9 @@ def main_app():
                         cl_wdv = df["Original Cost (Rs)"] * (1 - (1 - df["Effective Rate"]) ** days_cl_frac)
                         
                         calc_cl = np.where(df["Days Used Closing"] > 0, np.where(df["Depreciation Method"] == "SLM", cl_slm, cl_wdv), 0)
-                        
-                        # FIX: Assign first, then apply fillna() natively on the Pandas Series
                         df["Acc Dep Closing"] = np.minimum(calc_cl, df["Max Acc Dep"])
                         df["Acc Dep Closing"] = df["Acc Dep Closing"].fillna(0)
 
-                        # FIX: Assign first, then apply fillna()
                         df["Dep During Year"] = np.maximum(df["Acc Dep Closing"] - df["Acc Dep Opening"], 0)
                         df["Dep During Year"] = df["Dep During Year"].fillna(0)
 
@@ -211,11 +219,7 @@ def main_app():
                         
                         raw_days = (df["Latest Date of Write Off"] - calc_start_date).dt.days + 1
                         
-                        df["Days Used on Deletions"] = np.where(
-                            valid_wo & in_fy,
-                            raw_days.fillna(0),
-                            0
-                        )
+                        df["Days Used on Deletions"] = np.where(valid_wo & in_fy, raw_days.fillna(0), 0)
                         df["Days Used on Deletions"] = np.clip(df["Days Used on Deletions"], 0, 365)
                         
                         del_days_frac = df["Days Used on Deletions"] / 365
@@ -224,29 +228,34 @@ def main_app():
                         del_slm = base_del * df["Effective Rate"] * del_days_frac
                         del_wdv = base_del * (1 - (1 - df["Effective Rate"]) ** del_days_frac)
                         
-                        # FIX: Assign the raw numpy array to the dataframe column first
                         df["Depreciation on Deletions"] = np.where(
                             df["Gross Block Deletions"] > 0,
                             np.maximum(np.where(df["Depreciation Method"] == "SLM", del_slm, del_wdv), 0),
                             0
                         )
-                        # Then use Pandas to fill the NaN values
                         df["Depreciation on Deletions"] = df["Depreciation on Deletions"].fillna(0)
 
                         # Net Block Logic
                         df["Net Block Opening"] = (df["Gross Block Opening"] - df["Acc Dep Opening"]).fillna(0)
                         df["Net Block Closing"] = (df["Gross Block Closing"] - df["Acc Dep Closing"]).fillna(0)
 
-                        # Formatted Output
+                        # Provide the full layout you requested
                         final_cols = [
                             "Control No.", "Date of Purchase", "Put to use date", "Asset Category", 
+                            "Original Cost (Rs)", "Salvage Value", "Effective Rate",
                             "Gross Block Opening", "Gross Block Additions", "Gross Block Deletions", "Gross Block Closing",
                             "Acc Dep Opening", "Depreciation on Deletions", "Dep During Year", "Acc Dep Closing", 
                             "Net Block Opening", "Net Block Closing"
                         ]
+                        
+                        # Add missing columns safely if they weren't matched
+                        for c in final_cols:
+                            if c not in df.columns:
+                                df[c] = 0
+                                
                         final_far = df[final_cols]
 
-                        st.success("Calculations complete! Deletion depreciation math applied successfully.")
+                        st.success("Calculations complete! Data sanitized and FAR generated successfully.")
                         st.dataframe(final_far.style.format({col: "{:,.2f}" for col in final_far.select_dtypes(include=['float64','int64']).columns}), use_container_width=True, hide_index=True)
 
                         # Excel Download
@@ -264,7 +273,6 @@ def main_app():
                 except Exception as e:
                     st.error(f"Calculation Error: {e}")
 
-# --- Render Application State ---
 if st.session_state.logged_in:
     main_app()
 else:
