@@ -7,11 +7,10 @@ import io
 # --- Webpage & Brand Setup ---
 st.set_page_config(page_title="The AccounTech | FAR Tool", layout="wide", page_icon="🏢")
 
-# --- Session State Management (Remembers User Inputs) ---
+# --- Session State Management ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
-# Initialize empty tables in session memory so data survives tab-switching
 if 'rules_data' not in st.session_state:
     st.session_state.rules_data = pd.DataFrame(columns=["Asset Category", "Depreciation Method", "Useful Life"])
 
@@ -21,12 +20,10 @@ if 'add_data' not in st.session_state:
 if 'wo_data' not in st.session_state:
     st.session_state.wo_data = pd.DataFrame(columns=["Control No.", "Date of Write Off", "FA Write off Qty", "Reason"])
 
-# --- Helper Function to Clean Excel Data ---
+# --- Helper Function ---
 def safe_numeric(col, default_val=0):
     """Safely converts Excel comma-formatted strings into pure Python numbers."""
-    # Convert to string, strip out everything except digits, decimals, and minus signs
     cleaned = col.astype(str).str.replace(r'[^\d.-]', '', regex=True)
-    # Convert to numeric, turn errors to NaN, then fill with default value
     return pd.to_numeric(cleaned, errors='coerce').fillna(default_val)
 
 # --- 1. LOGIN PAGE ---
@@ -76,7 +73,7 @@ def main_app():
 
     elif page == "📉 Depreciation Tool":
         st.title("Enterprise FAR Calculator")
-        st.markdown("Generates exact days-used depreciation with advanced deletion math.")
+        st.markdown("Generates exact days-used depreciation with advanced proportional logic.")
 
         st.subheader("Step 1: Financial Year Setup")
         col_d1, col_d2 = st.columns(2)
@@ -96,19 +93,14 @@ def main_app():
         st.subheader("Step 3: Fixed Asset Additions")
         st.session_state.add_data["Date of Purchase"] = pd.to_datetime(st.session_state.add_data["Date of Purchase"], errors='coerce')
         st.session_state.add_data["Put to use date"] = pd.to_datetime(st.session_state.add_data["Put to use date"], errors='coerce')
-        
         st.session_state.add_data = st.data_editor(
             st.session_state.add_data, num_rows="dynamic", use_container_width=True,
-            column_config={
-                "Date of Purchase": st.column_config.DateColumn("Date of Purchase"), 
-                "Put to use date": st.column_config.DateColumn("Put to use date")
-            }
+            column_config={"Date of Purchase": st.column_config.DateColumn("Date of Purchase"), "Put to use date": st.column_config.DateColumn("Put to use date")}
         )
 
         st.divider()
         st.subheader("Step 4: Fixed Asset Write-Offs")
         st.session_state.wo_data["Date of Write Off"] = pd.to_datetime(st.session_state.wo_data["Date of Write Off"], errors='coerce')
-        
         st.session_state.wo_data = st.data_editor(
             st.session_state.wo_data, num_rows="dynamic", use_container_width=True,
             column_config={"Date of Write Off": st.column_config.DateColumn("Date of Write Off")}
@@ -117,26 +109,21 @@ def main_app():
         # CORE MATH ENGINE
         st.divider()
         if st.button("⚙️ Generate Enterprise FAR", type="primary"):
-            with st.spinner("Sanitizing data & processing advanced pro-rata math..."):
+            with st.spinner("Processing exact proportional pro-rata math..."):
                 try:
                     if st.session_state.rules_data.empty or st.session_state.add_data.empty:
                         st.warning("⚠️ Please enter Rules and Additions data.")
                     else:
                         df = st.session_state.add_data.copy()
                         
-                        # --- FIX 1: Robust Numeric Cleaning ---
                         df["Original Cost (Rs)"] = safe_numeric(df["Original Cost (Rs)"], 0)
                         df["Salvage Value"] = safe_numeric(df["Salvage Value"], 0)
                         df["FA Qty"] = safe_numeric(df["FA Qty"], 1)
 
-                        # --- FIX 2: Strip accidental spaces from Categories to ensure exact matches ---
                         df["Asset Category"] = df["Asset Category"].astype(str).str.strip()
                         rules_clean = st.session_state.rules_data.copy()
                         rules_clean["Asset Category"] = rules_clean["Asset Category"].astype(str).str.strip()
                         
-                        df["Max Acc Dep"] = np.maximum(df["Original Cost (Rs)"] - df["Salvage Value"], 0)
-                        
-                        # Handle missing dates gracefully
                         df["Date of Purchase"] = pd.to_datetime(df["Date of Purchase"], errors='coerce')
                         df["Put to use date"] = pd.to_datetime(df["Put to use date"], errors='coerce')
                         df["Date of Purchase"] = df["Date of Purchase"].fillna(df["Put to use date"])
@@ -145,8 +132,13 @@ def main_app():
                         df = pd.merge(df, rules_clean, on="Asset Category", how="left")
                         df["Useful Life"] = safe_numeric(df["Useful Life"], 1)
                         
-                        safe_cost = np.where(df["Original Cost (Rs)"] == 0, 1, df["Original Cost (Rs)"])
-                        wdv_rate = 1 - (df["Salvage Value"] / safe_cost) ** (1 / df["Useful Life"])
+                        safe_qty = np.where(df["FA Qty"] == 0, 1, df["FA Qty"])
+                        total_cost = df["Original Cost (Rs)"]
+                        total_salvage = df["Salvage Value"]
+                        max_acc_dep = np.maximum(total_cost - total_salvage, 0)
+                        
+                        safe_cost = np.where(total_cost == 0, 1, total_cost)
+                        wdv_rate = 1 - (total_salvage / safe_cost) ** (1 / df["Useful Life"])
                         slm_rate = 1 / df["Useful Life"]
                         
                         df["Effective Rate"] = np.where(df["Depreciation Method"] == "WDV", wdv_rate, slm_rate)
@@ -176,70 +168,59 @@ def main_app():
                         df["FA Write off Qty Opening"] = df["FA Write off Qty Opening"].fillna(0)
                         df["FA Write off Qty During the year"] = df["FA Write off Qty During the year"].fillna(0)
 
-                        safe_qty = np.where(df["FA Qty"] == 0, 1, df["FA Qty"])
+                        # --- THE FIX: Mathematical "Proportional" Depreciation Logic ---
+                        days_opening = np.clip((fy_start_dt - df["Put to use date"]).dt.days, 0, 36500)
+                        days_closing = np.clip((fy_end_dt - df["Put to use date"]).dt.days + 1, 0, 36500)
+                        
+                        latest_wo = pd.to_datetime(df["Latest Date of Write Off"], errors='coerce')
+                        days_deletion = (latest_wo - df["Put to use date"]).dt.days + 1
+                        days_deletion = np.clip(days_deletion.fillna(0), 0, 36500)
+                        
+                        # Calculate full theoretical depreciation first
+                        def calc_full_acc_dep(days):
+                            days_frac = days / 365.0
+                            slm = max_acc_dep * df["Effective Rate"] * days_frac
+                            wdv = total_cost * (1 - (1 - df["Effective Rate"]) ** days_frac)
+                            calc = np.where(df["Depreciation Method"] == "SLM", slm, wdv)
+                            return np.where(days > 0, np.clip(calc, 0, max_acc_dep), 0)
 
-                        df["FA Write off(Rs) Opening"] = (df["FA Write off Qty Opening"] / safe_qty) * df["Original Cost (Rs)"]
-                        df["FA Write off(Rs) During the year"] = (df["FA Write off Qty During the year"] / safe_qty) * df["Original Cost (Rs)"]
+                        full_acc_dep_opening = calc_full_acc_dep(days_opening)
+                        full_acc_dep_closing = calc_full_acc_dep(days_closing)
+                        full_acc_dep_deletion = calc_full_acc_dep(days_deletion)
 
-                        df["Calc End Date"] = df["Latest Date of Write Off"].fillna(fy_end_dt)
-                        df["Calc End Date"] = pd.to_datetime(df["Calc End Date"])
+                        # Calculate Proportions based on QTY remaining
+                        qty_op_deleted = df["FA Write off Qty Opening"]
+                        qty_dur_deleted = df["FA Write off Qty During the year"]
+                        
+                        prop_opening_deleted = np.clip(qty_op_deleted / safe_qty, 0, 1)
+                        prop_during_deleted = np.clip(qty_dur_deleted / safe_qty, 0, 1)
+                        
+                        prop_opening_active = np.clip(1 - prop_opening_deleted, 0, 1)
+                        prop_closing_active = np.clip(1 - (prop_opening_deleted + prop_during_deleted), 0, 1)
 
-                        df["Days Used Opening"] = np.clip((fy_start_dt - df["Put to use date"]).dt.days, 0, 36500)
-                        df["Days Used Closing"] = np.clip((df["Calc End Date"] - df["Put to use date"]).dt.days + 1, 0, 36500)
-
-                        df["Gross Block Opening"] = np.where(df["Date of Purchase"] < fy_start_dt, df["Original Cost (Rs)"] - df["FA Write off(Rs) Opening"], 0)
-                        df["Gross Block Additions"] = np.where((df["Date of Purchase"] >= fy_start_dt) & (df["Date of Purchase"] <= fy_end_dt), df["Original Cost (Rs)"], 0)
-                        df["Gross Block Deletions"] = df["FA Write off(Rs) During the year"]
+                        # Scale Gross Block Perfectly
+                        df["Gross Block Opening"] = np.where(df["Date of Purchase"] < fy_start_dt, total_cost * prop_opening_active, 0)
+                        df["Gross Block Additions"] = np.where((df["Date of Purchase"] >= fy_start_dt) & (df["Date of Purchase"] <= fy_end_dt), total_cost, 0)
+                        df["Gross Block Deletions"] = total_cost * prop_during_deleted
                         df["Gross Block Closing"] = df["Gross Block Opening"] + df["Gross Block Additions"] - df["Gross Block Deletions"]
 
-                        # Accumulated Depreciation Calculations
-                        days_op_frac = df["Days Used Opening"] / 365
-                        op_slm = df["Max Acc Dep"] * df["Effective Rate"] * days_op_frac
-                        op_wdv = df["Original Cost (Rs)"] * (1 - (1 - df["Effective Rate"]) ** days_op_frac)
+                        # Scale Acc Dep Perfectly
+                        df["Acc Dep Opening"] = full_acc_dep_opening * prop_opening_active
+                        df["Acc Dep Closing"] = full_acc_dep_closing * prop_closing_active
                         
-                        calc_op = np.where(df["Days Used Opening"] > 0, np.where(df["Depreciation Method"] == "SLM", op_slm, op_wdv), 0)
-                        df["Acc Dep Opening"] = np.minimum(calc_op, df["Max Acc Dep"])
-                        df["Acc Dep Opening"] = df["Acc Dep Opening"].fillna(0)
+                        # Derive Expenses using algebraic plug formulas to guarantee balance
+                        acc_dep_withdrawn = full_acc_dep_deletion * prop_during_deleted
+                        total_dep_expense = df["Acc Dep Closing"] - df["Acc Dep Opening"] + acc_dep_withdrawn
+                        opening_acc_dep_of_sold_items = full_acc_dep_opening * prop_during_deleted
+                        
+                        df["Depreciation on Deletions"] = np.maximum(acc_dep_withdrawn - opening_acc_dep_of_sold_items, 0)
+                        df["Dep During Year"] = np.maximum(total_dep_expense - df["Depreciation on Deletions"], 0)
 
-                        days_cl_frac = df["Days Used Closing"] / 365
-                        cl_slm = df["Max Acc Dep"] * df["Effective Rate"] * days_cl_frac
-                        cl_wdv = df["Original Cost (Rs)"] * (1 - (1 - df["Effective Rate"]) ** days_cl_frac)
-                        
-                        calc_cl = np.where(df["Days Used Closing"] > 0, np.where(df["Depreciation Method"] == "SLM", cl_slm, cl_wdv), 0)
-                        df["Acc Dep Closing"] = np.minimum(calc_cl, df["Max Acc Dep"])
-                        df["Acc Dep Closing"] = df["Acc Dep Closing"].fillna(0)
+                        # Final Net Block Calculation
+                        df["Net Block Opening"] = np.maximum(df["Gross Block Opening"] - df["Acc Dep Opening"], 0)
+                        df["Net Block Closing"] = np.maximum(df["Gross Block Closing"] - df["Acc Dep Closing"], 0)
 
-                        df["Dep During Year"] = np.maximum(df["Acc Dep Closing"] - df["Acc Dep Opening"], 0)
-                        df["Dep During Year"] = df["Dep During Year"].fillna(0)
-
-                        # Depreciation on Deletions Logic
-                        calc_start_date = df["Put to use date"].clip(lower=fy_start_dt)
-                        valid_wo = df["Latest Date of Write Off"].notna()
-                        in_fy = (df["Latest Date of Write Off"] >= fy_start_dt) & (df["Latest Date of Write Off"] <= fy_end_dt)
-                        
-                        raw_days = (df["Latest Date of Write Off"] - calc_start_date).dt.days + 1
-                        
-                        df["Days Used on Deletions"] = np.where(valid_wo & in_fy, raw_days.fillna(0), 0)
-                        df["Days Used on Deletions"] = np.clip(df["Days Used on Deletions"], 0, 365)
-                        
-                        del_days_frac = df["Days Used on Deletions"] / 365
-                        base_del = df["Gross Block Deletions"] - df["Salvage Value"]
-                        
-                        del_slm = base_del * df["Effective Rate"] * del_days_frac
-                        del_wdv = base_del * (1 - (1 - df["Effective Rate"]) ** del_days_frac)
-                        
-                        df["Depreciation on Deletions"] = np.where(
-                            df["Gross Block Deletions"] > 0,
-                            np.maximum(np.where(df["Depreciation Method"] == "SLM", del_slm, del_wdv), 0),
-                            0
-                        )
-                        df["Depreciation on Deletions"] = df["Depreciation on Deletions"].fillna(0)
-
-                        # Net Block Logic
-                        df["Net Block Opening"] = (df["Gross Block Opening"] - df["Acc Dep Opening"]).fillna(0)
-                        df["Net Block Closing"] = (df["Gross Block Closing"] - df["Acc Dep Closing"]).fillna(0)
-
-                        # Provide the full layout you requested
+                        # Formatting Output
                         final_cols = [
                             "Control No.", "Date of Purchase", "Put to use date", "Asset Category", 
                             "Original Cost (Rs)", "Salvage Value", "Effective Rate",
@@ -248,7 +229,6 @@ def main_app():
                             "Net Block Opening", "Net Block Closing"
                         ]
                         
-                        # Add missing columns safely if they weren't matched
                         for c in final_cols:
                             if c not in df.columns:
                                 df[c] = 0
